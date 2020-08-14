@@ -1,0 +1,5 @@
+# Sphinx build results, e.g. from `make html`
+_build
+
+# Auto-generated Sphinx files with autosummary: https://www.sphinx-doc.org/en/master/usage/extensions/autosummary.html
+_stubs

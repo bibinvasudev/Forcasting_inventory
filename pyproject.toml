@@ -1,0 +1,48 @@
+[tool.poetry]
+name = "forecasting_platform"
+version = "0.1.0"
+description = ""
+authors = ["Oliver Wyman"]
+
+[tool.poetry.dependencies]
+# The following versions are set to those expected to be available in the client environment
+python = "3.8.1"
+h2o = "3.28.0.3"
+pandas = "1.0.1"
+xlrd = "1.2.0"  # optional dependency for pandas.read_excel method
+openpyxl = "3.0.3" # optional dependency for pandas.to_excel method
+click = "7.1.1"
+intel-openmp = "2019.0"  # Latest release 2020.0.133 does not include Windows/MacOS packages, so we force version 2019.0
+icc_rt = "2019.0"  # Latest release 2020.0.133 does not include Windows/MacOS packages, so we force version 2019.0
+pyodbc = "4.0.30"
+sqlalchemy = "1.3.17"
+psutil = "5.7.0"
+
+# Optional dependencies, depending on the installation environment (e.g. via Jenkins)
+poetry = {version = "1.0.5", optional = true, extras = ["poetry"]}
+
+owforecasting = {path = "owforecasting", develop = false}  # See setup_owforecasting.sh
+
+[tool.poetry.extras]
+poetry = ["poetry"]
+
+[tool.poetry.dev-dependencies]
+pre-commit = "^2.2.0"
+pytest = "^5.4.1"
+pytest-freezegun = "^0.4.1"
+pytest-randomly = "^3.3.1"
+pytest-xdist = "^1.32.0"
+pytest-cov = "^2.8.1"
+sphinx = "^3.0.4"
+sphinx_rtd_theme = "^0.4.3"
+sphinx-click = "^2.3.2"
+
+[tool.black]
+target-version = ['py38']
+
+[tool.poetry.scripts]
+forecasting_platform = "forecasting_platform.__main__:cli"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"

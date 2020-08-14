@@ -1,0 +1,44 @@
+version: "3"
+services:
+  forecasting-platform:
+    image: ow-forecasting-platform  # Run build_docker_image.sh to build the image
+
+    command: ["bash", "-c", "python -m forecasting_platform setup-database internal && sleep infinity"]
+
+    # --- Enable the line below to debug your docker compose setup if the container cannot be built or started ---
+    # You can then use `docker-compose exec forecasting-platform bash` to run commands in the container
+    # command: ["bash", "-c", "sleep infinity"]
+
+    depends_on:
+      - h2o-server
+
+  h2o-server:
+    build: ./h2o-server/
+    command:
+      - "java"
+      - "-Xmx1g"  # Max Heap Memory 1 GB, https://docs.h2o.ai/h2o/latest-stable/h2o-docs/starting-h2o.html#jvm-options
+      - "-jar"
+      - "/opt/h2o.jar"  # Run H2O Server
+      - "-nthreads"
+      - "16"  # Fixed size for reproducible results, http://docs.h2o.ai/h2o/latest-stable/h2o-docs/data-science/gbm-faq/reproducibility.html
+    ports:
+      - ${DOCKER_BIND_IP:-127.0.0.1}:54321:54321
+
+  mssql-server:
+    # see latest versions https://support.microsoft.com/en-us/help/4518398/sql-server-2019-build-versions
+    # https://hub.docker.com/_/microsoft-mssql-server
+    image: mcr.microsoft.com/mssql/server:2019-CU4-ubuntu-16.04
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=Password1
+    ports:
+      - ${DOCKER_BIND_IP:-127.0.0.1}:1433:1433
+
+  # Jenkins can be enabled locally for development and debugging of the windows_installation scripts, see README
+#  jenkins:
+#    build: ./jenkins/
+#    volumes:
+#      - ./jenkins_home:/var/jenkins_home
+#      - ./:/ow-forecasting-platform
+#    ports:
+#      - 127.0.0.1:8080:8080

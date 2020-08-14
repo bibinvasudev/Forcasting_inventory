@@ -1,0 +1,132 @@
+image: python:3.8.1
+
+definitions:
+  caches:
+    poetry: ~/.cache/pypoetry
+    pre-commit: ~/.cache/pre-commit
+  services:
+    docker:
+      memory: 3584  # increase memory for H2O and MSSQL from default 1GB
+  steps:
+    - step: &code-quality
+        name: Code Quality
+        script:
+          - pip install poetry==1.0.5
+          - mssql/setup_odbc_ubuntu.sh
+          - ./setup_owforecasting.sh
+          - poetry install
+          - poetry run pre-commit install
+          - poetry run pre-commit run --all-files
+          - ./ow_commit_checker.sh
+          - poetry run ./docs/show_docs.sh
+        caches:
+          - pip
+          - poetry
+          - pre-commit
+    - step: &test
+        name: Test
+        size: 2x
+        script:
+          - pip install docker-compose
+          - pip install poetry==1.0.5
+          - mssql/setup_odbc_ubuntu.sh
+          - ./setup_owforecasting.sh
+          - poetry install
+          - export DOCKER_BIND_IP="0.0.0.0"  # https://github.com/docker/compose/issues/2999#issuecomment-410025786
+          - docker-compose up -d --build h2o-server
+          - docker-compose up -d mssql-server
+          - mkdir -p "03 Processed data/monthly_process/202002/anonymized_data_dsx/"
+          - mkdir -p Downloads
+          - ./bb-pipeline-download-file.sh expected_results_v27.zip Downloads
+          - unzip Downloads/expected_results_v27.zip -d .
+          - ./bb-pipeline-download-file.sh anonymized_data_dsx_v6.zip Downloads
+          - unzip "Downloads/anonymized_data_dsx_v6.zip" -d "03 Processed data/monthly_process/202002/"
+          - ./bb-pipeline-download-file.sh identifier.csv "00 Config"
+          - poetry run python -m forecasting_platform info  # Log H2O server info and ensure working connection
+          - poetry run python -m forecasting_platform setup-database internal # Setup internal database schema
+          - poetry run python -m forecasting_platform setup-database dsx-write # Setup dsx_write database schema
+          - docker-compose logs
+          - # while true; do docker stats --no-stream; sleep 5; done &  # Debug Docker memory usage
+          - # top -b -d 5 -o RES -E m &  # Debug system and process memory usage
+          - poetry run ./notebooks/test_notebooks.sh
+          - poetry run pytest --junitxml=test-reports/test_report.xml --cov-fail-under=95
+        caches:
+          - docker
+          - pip
+          - poetry
+        services:
+          - docker
+
+pipelines:
+  default:
+    - step: *code-quality
+    - step: *test
+  branches:
+    master:
+      - step: *code-quality
+      - step: *test
+      - step:
+          name: Trigger push-to-github pipeline
+          size: 2x
+          script:
+            - pipe: atlassian/trigger-pipeline:4.1.3
+              variables:
+                BITBUCKET_USERNAME: $BB_TRIGGER_PIPELINE_USER
+                BITBUCKET_APP_PASSWORD: $BB_TRIGGER_PIPELINE_PW
+                REPOSITORY: $BITBUCKET_REPO_SLUG
+                BRANCH_NAME: $BITBUCKET_BRANCH
+                CUSTOM_PIPELINE_NAME: 'upload-and-push-to-github'
+                WAIT: 'true'
+  custom:
+    upload-and-push-to-github:
+      - step:
+          name: Upload data to github release
+          script:
+            # install dependencies
+            - apt-get update && apt-get install -y hub zip && rm -r /var/lib/apt/lists/*
+            # setup github cli (see https://github.com/github/hub)
+            - git remote set-url origin https://$GITHUB_CLIENT_USER:$GITHUB_CLIENT_TOKEN@github.com/$GITHUB_CLIENT_REPO.git
+            - export GITHUB_TOKEN=$GITHUB_CLIENT_TOKEN
+            - export GITHUB_REPOSITORY=$GITHUB_CLIENT_REPO
+            - export GITHUB_RELEASE_TAG="forecasting-platform-data"
+            # download data from bitbucket
+            - mkdir -p "upload_data/"
+            - ./setup_owforecasting.sh
+            - zip -r "upload_data/owforecasting.zip" "owforecasting/"
+            - ./bb-pipeline-download-file.sh expected_results_v27.zip "upload_data/"
+            - ./bb-pipeline-download-file.sh DSX_anonymized_input_v2.zip "upload_data/"  # Uploaded as ZIP to avoid auto-extraction with browser download
+            - ./bb-pipeline-download-file.sh identifier.csv "upload_data/"
+            - ./bb-pipeline-download-file.sh anonymized_data_dsx_v6.zip "upload_data/"
+            - mv upload_data/expected_results_v27.zip upload_data/expected_results.zip
+            - mv upload_data/anonymized_data_dsx_v6.zip upload_data/anonymized_data_dsx.zip
+            - unzip upload_data/DSX_anonymized_input_v2.zip -d "upload_data"
+            # upload to github release (overwrite existing assets)
+            - ls -alh "upload_data"
+            - hub release delete "$GITHUB_RELEASE_TAG"
+            - hub release create -m "$GITHUB_RELEASE_TAG" "$GITHUB_RELEASE_TAG"
+            - hub release edit -m "$GITHUB_RELEASE_TAG" -a "./upload_data/owforecasting.zip" "$GITHUB_RELEASE_TAG"
+            - hub release edit -m "$GITHUB_RELEASE_TAG" -a "./upload_data/expected_results.zip" "$GITHUB_RELEASE_TAG"
+            - hub release edit -m "$GITHUB_RELEASE_TAG" -a "./upload_data/DSX_anonymized_input.csv.gz" "$GITHUB_RELEASE_TAG"
+            - hub release edit -m "$GITHUB_RELEASE_TAG" -a "./upload_data/identifier.csv" "$GITHUB_RELEASE_TAG"
+            - hub release edit -m "$GITHUB_RELEASE_TAG" -a "./upload_data/anonymized_data_dsx.zip" "$GITHUB_RELEASE_TAG"
+            - hub release show "$GITHUB_RELEASE_TAG" --show-downloads
+      - step:
+          name: Push to github
+          script:
+            - git fetch --unshallow  # Fix for: "(shallow update not allowed) error: failed to push some refs"
+            - git remote add github https://$GITHUB_CLIENT_USER:$GITHUB_CLIENT_TOKEN@github.com/$GITHUB_CLIENT_REPO.git
+            - git push --force -u github HEAD
+
+
+    clean-up-github:
+      - step:
+          name: Clean-up github
+          script:
+            - git remote add github https://$GITHUB_CLIENT_USER:$GITHUB_CLIENT_TOKEN@github.com/$GITHUB_CLIENT_REPO.git
+            - git fetch github
+            - for branch in `git branch -r | grep -v HEAD`;do echo -e `git show --format="%ci %cr" $branch | head -n 1` \\t$branch; done | sort -r
+            - git fetch origin "+refs/heads/*:refs/remotes/origin/*"
+            - git branch -r | grep -i 'github/FSC' | cut -b10- > githubbranches.txt
+            - git branch -r | grep -i 'origin/FSC' | cut -b10- > bitbucketbranches.txt
+            - comm -23 githubbranches.txt bitbucketbranches.txt
+            - for branch in `comm -23 githubbranches.txt bitbucketbranches.txt`; do git push github --delete $branch; done
